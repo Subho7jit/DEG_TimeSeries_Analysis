@@ -1,0 +1,85 @@
+# Load required libraries
+library(GEOquery)
+library(limma)
+library(edgeR)
+library(ggplot2)
+library(Biobase)
+
+# Set GEO accession number
+accession <- "GSE22307"
+
+# Fetch the dataset from GEO
+gset <- getGEO(accession, GSEMatrix = TRUE, getGPL = FALSE)
+if (length(gset) > 1) idx <- grep("GPL", attr(gset, "names")) else idx <- 1
+gset <- gset[[idx]]
+
+# Convert to a matrix of expression values
+data <- exprs(gset)
+metadata <- pData(gset)
+metadata$timepoint <- factor(c(rep(0, 5), rep(2, 6), rep(4, 6), rep(6, 6)))  # Baseline = 0, Day2 = 2, Day4 = 4, Day6 = 6
+
+# Create DGEList object
+dge <- DGEList(counts = data)
+dge <- calcNormFactors(dge)
+
+# Convert DGEList to a matrix for lmFit
+data_matrix <- cpm(dge, log = TRUE)  # Use log-transformed counts per million (CPM)
+
+# Create design matrix for time series analysis
+design <- model.matrix(~ timepoint, data = metadata)
+colnames(design) <- c("Intercept", "Day2", "Day4", "Day6")
+
+# Fit the linear model
+fit <- lmFit(data_matrix, design)
+
+# Define contrasts for the time series analysis
+contrast.matrix <- makeContrasts(
+  Day2_vs_Baseline = Day2 - Intercept,    # Day2 vs Baseline
+  Day4_vs_Baseline = Day4 - Intercept,    # Day4 vs Baseline
+  Day6_vs_Baseline = Day6 - Intercept,    # Day6 vs Baseline
+  Trend = Day2 + Day4 + Day6 - 3 * Intercept,  # Trend over time
+  levels = design
+)
+
+# Fit the contrasts
+fit2 <- contrasts.fit(fit, contrast.matrix)
+
+# Apply empirical Bayes smoothing
+fit2 <- eBayes(fit2)
+
+# Summarize the results for each contrast
+topTableResults_Day2 <- topTable(fit2, coef = "Day2_vs_Baseline")
+topTableResults_Day4 <- topTable(fit2, coef = "Day4_vs_Baseline")
+topTableResults_Day6 <- topTable(fit2, coef = "Day6_vs_Baseline")
+topTableResults_Trend <- topTable(fit2, coef = "Trend")
+
+# Save the results to CSV files
+setwd("C:/1.Research files/Zoology_mitocondrial_Dysfunction/GSE22307")
+write.csv(topTableResults_Day2, file = "topTableResults_Day2.csv", row.names = TRUE)
+write.csv(topTableResults_Day4, file = "topTableResults_Day4.csv", row.names = TRUE)
+write.csv(topTableResults_Day6, file = "topTableResults_Day6.csv", row.names = TRUE)
+write.csv(topTableResults_Trend, file = "topTableResults_Trend.csv", row.names = TRUE)
+
+print("Results saved to CSV files.")
+
+# Extract the top 10 differentially expressed genes based on trend
+top_genes <- topTable(fit2, coef = "Trend", number = 10)
+top_10 <- rownames(top_genes)
+
+# Prepare expression data for plotting
+expr_data <- data_matrix[top_10, ]
+plot_data <- data.frame(
+  Gene = rep(rownames(expr_data), each = ncol(expr_data)),
+  Expression = as.vector(as.matrix(expr_data)),
+  Time = rep(metadata$timepoint, times = nrow(expr_data))
+)
+
+# Plot expression over time for top genes
+ggplot(plot_data, aes(x = Time, y = Expression, color = Gene, group = Gene)) +
+  geom_line() +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "Expression of Top 10 Genes Over Time", x = "Time", y = "Expression Level")
+
+# Save the plot
+ggsave("Time_Series_Plot_Top_Genes.png", width = 10, height = 6)
